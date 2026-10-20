@@ -1,95 +1,62 @@
-// Infinity Backend — Feedback API
-// Compatible avec "type": "module"
-
-const RESEND_API_URL = "https://api.resend.com/emails";
-const FEEDBACK_TO = "firminphinees@gmail.com";
+import nodemailer from "nodemailer";
 
 export default async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
-  res.setHeader(
-    "Access-Control-Allow-Methods",
-    "POST, OPTIONS"
-  );
-  res.setHeader(
-    "Access-Control-Allow-Headers",
-    "Content-Type"
-  );
-  res.setHeader("Cache-Control", "no-store");
+  res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
 
   if (req.method === "OPTIONS") {
-    return res.status(204).end();
+    return res.status(200).end();
   }
 
   if (req.method !== "POST") {
-    res.setHeader("Allow", "POST, OPTIONS");
-
     return res.status(405).json({
       success: false,
       error: "Méthode non autorisée."
     });
   }
 
-  const apiKey = process.env.RESEND_API_KEY;
-  const from = process.env.FEEDBACK_FROM;
-
-  if (!apiKey || !from) {
-    console.error("Configuration Resend manquante.");
-
-    return res.status(500).json({
-      success: false,
-      error: "Le service e-mail n'est pas configuré."
-    });
-  }
-
   try {
-    const body =
-      typeof req.body === "string"
-        ? JSON.parse(req.body)
-        : req.body;
+    const { type, description, message, rating, question, response, answer } =
+      req.body || {};
 
-    if (!body || typeof body !== "object" || Array.isArray(body)) {
-      return res.status(400).json({
+    const gmailUser = process.env.GMAIL_USER;
+    const gmailPassword = process.env.GMAIL_APP_PASSWORD;
+
+    if (!gmailUser || !gmailPassword) {
+      console.error("Configuration Gmail manquante.");
+
+      return res.status(500).json({
         success: false,
-        error: "Données invalides."
+        error: "Le service d'envoi n'est pas configuré."
       });
     }
 
-    const clean = (value, max = 3000) =>
-      typeof value === "string"
-        ? value.trim().slice(0, max)
-        : "";
-
     let subject;
-    let details;
+    let text;
 
-    if (body.type === "bug") {
-      const description = clean(
-        body.description || body.message,
-        5000
-      );
+    if (type === "bug") {
+      const bugDescription = String(description || message || "").trim();
 
-      if (!description) {
+      if (!bugDescription || bugDescription.length > 5000) {
         return res.status(400).json({
           success: false,
-          error: "La description du bug est obligatoire."
+          error: "Description du bug invalide."
         });
       }
 
-      subject = "[Infinity] Signalement de bug";
+      subject = "🐛 Signalement de bug — Infinity";
 
-      details = [
-        "Nouveau signalement de bug Infinity",
+      text = [
+        "Nouveau signalement de bug sur Infinity",
         "",
         "Description :",
-        description,
+        bugDescription,
         "",
-        "Compte : " + (clean(body.account, 200) || "Non renseigné"),
-        "Page : " + (clean(body.page, 300) || "Non renseignée"),
-        "Version : " + (clean(body.appVersion, 100) || "Non renseignée"),
-        "Date : " + (clean(body.date, 100) || "Non renseignée")
+        `Date : ${new Date().toISOString()}`
       ].join("\n");
-    } else if (body.type === "rating") {
-      if (body.rating !== "up" && body.rating !== "down") {
+    } else if (type === "rating") {
+      if (rating !== "up" && rating !== "down") {
         return res.status(400).json({
           success: false,
           error: "Évaluation invalide."
@@ -97,72 +64,53 @@ export default async function handler(req, res) {
       }
 
       subject =
-        body.rating === "up"
-          ? "[Infinity] Évaluation positive"
-          : "[Infinity] Évaluation négative";
+        rating === "up"
+          ? "👍 Évaluation positive — Infinity"
+          : "👎 Évaluation négative — Infinity";
 
-      details = [
-        "Nouvelle évaluation d'une réponse Infinity",
+      text = [
+        "Nouvelle évaluation d'une réponse d'Infinity",
         "",
-        "Évaluation : " +
-          (body.rating === "up" ? "👍 Positive" : "👎 Négative"),
+        `Évaluation : ${rating === "up" ? "Positive 👍" : "Négative 👎"}`,
         "",
-        "Question :",
-        clean(body.question, 2000) || "Non renseignée",
+        `Question : ${String(question || "Non fournie").slice(0, 3000)}`,
         "",
-        "Réponse évaluée :",
-        clean(body.response || body.answer, 5000) || "Non renseignée",
+        `Réponse de l'IA : ${String(response || answer || "Non fournie").slice(0, 8000)}`,
         "",
-        "Compte : " + (clean(body.account, 200) || "Non renseigné"),
-        "Date : " + (clean(body.date, 100) || "Non renseignée")
+        `Date : ${new Date().toISOString()}`
       ].join("\n");
     } else {
       return res.status(400).json({
         success: false,
-        error: "Type de feedback inconnu."
+        error: "Type de retour non reconnu."
       });
     }
 
-    const emailResponse = await fetch(RESEND_API_URL, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify({
-        from,
-        to: [FEEDBACK_TO],
-        subject,
-        text: details
-      })
+    const transporter = nodemailer.createTransport({
+      service: "gmail",
+      auth: {
+        user: gmailUser,
+        pass: gmailPassword
+      }
     });
 
-    const result = await emailResponse.json();
-
-    if (!emailResponse.ok) {
-      console.error(
-        "Erreur Resend :",
-        emailResponse.status,
-        result
-      );
-
-      return res.status(502).json({
-        success: false,
-        error: "Resend n'a pas pu accepter l'e-mail."
-      });
-    }
+    await transporter.sendMail({
+      from: `"Infinity" <${gmailUser}>`,
+      to: "firminphinees@gmail.com",
+      subject,
+      text
+    });
 
     return res.status(200).json({
       success: true,
-      message: "Ton retour a été envoyé.",
-      id: result.id
+      message: "Retour envoyé avec succès."
     });
   } catch (error) {
-    console.error("Erreur Feedback :", error);
+    console.error("Erreur d'envoi du feedback :", error.message);
 
     return res.status(500).json({
       success: false,
-      error: "Erreur interne lors du traitement du retour."
+      error: "Impossible d'envoyer le retour pour le moment."
     });
   }
 }
