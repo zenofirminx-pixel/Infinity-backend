@@ -3,6 +3,7 @@ import db from "./initMemory.js";
 import { extractMemory } from "../lib/memoryExtractor.js";
 import { saveMemory } from "../lib/saveMemory.js";
 import { parse, serialize } from "cookie";
+import { readSession, getUserId } from "../lib/session.js";
 import { randomUUID } from "crypto";
 
 export const config = { maxDuration: 60 };
@@ -95,12 +96,13 @@ async function searchWeb(query) {
 
 // Fonction de détection d'intention de recherche web
 function shouldSearchWeb(message) {
-  const lowerMessage = message.toLowerCase();
+  const lowerMessage = message.toLocaleLowerCase("fr").normalize("NFD").replace(/[\u0300-\u036f]/g, "");
   // Liste de mots clés qui déclenchent la recherche
   const searchKeywords = [
-    "recherche", "cherche", "trouve", "actu", "actualité", "météo", 
-    "maintenant", "en ce moment", "aujourd'hui", "2026", "nouvelle", 
-    "score", "match", "température", "qui est", "qu'est-ce qui se passe"
+    "recherche", "cherche", "trouve", "actu", "actualite", "meteo",
+    "maintenant", "en ce moment", "aujourd'hui", "aujourd hui", "nouvelle",
+    "score", "match", "temperature", "qui est", "qu'est-ce qui se passe",
+    "quelles sont les dernieres", "derniere version", "prix actuel", "source recente"
   ];
   return searchKeywords.some(keyword => lowerMessage.includes(keyword));
 }
@@ -133,6 +135,24 @@ function closeStream(res) {
   } catch {}
 }
 
+async function upsertConversation(userId, convId, userMessage, assistantMessage, timestamp) {
+  // L'historique UI lit la collection conversations/{userId}; garder ce format synchronisé.
+  const ref = db.collection("conversations").doc(userId);
+  const snap = await ref.get();
+  const conversations = snap.exists && Array.isArray(snap.data()?.conversations) ? snap.data().conversations : [];
+  let conv = conversations.find(item => item.id === convId);
+  if (!conv) {
+    conv = { id: convId, title: userMessage.slice(0, 40) || "Nouvelle conversation", messages: [], date: timestamp };
+    conversations.unshift(conv);
+  }
+  if (!Array.isArray(conv.messages)) conv.messages = [];
+  conv.title = conv.title && conv.title !== "Nouvelle conversation" ? conv.title : userMessage.slice(0, 40);
+  conv.messages.push({ text: userMessage, type: "user", timestamp });
+  conv.messages.push({ text: assistantMessage, type: "bot", timestamp: Date.now() });
+  conv.updatedAt = Date.now();
+  await ref.set({ conversations: conversations.slice(0, 100) }, { merge: true });
+}
+
 export default async function handler(req, res) {
   setCors(res);
   if (req.method === "OPTIONS") return res.status(200).end();
@@ -153,33 +173,24 @@ export default async function handler(req, res) {
     if (!convId) return sendError(res, "Missing convId");
 
     const cookies = parse(req.headers.cookie || "");
-    let userId = null;
-
-    if (cookies.aurx_session) {
-      try {
-        const user = JSON.parse(Buffer.from(cookies.aurx_session, "base64").toString());
-        userId = user.id || user.sid || user.email;
-      } catch (err) {
-        console.error("Erreur décodage session cookie :", err);
-      }
-    }
+    const session = readSession(req);
+    let userId = getUserId(session);
+    const isAuthenticated = Boolean(session && userId);
 
     if (!userId) {
       if (cookies.aurx_guest_id) {
         userId = cookies.aurx_guest_id;
       } else {
         userId = `guest_${randomUUID()}`;
-        res.setHeader(
-          "Set-Cookie",
-          serialize("aurx_guest_id", userId, {
-            path: "/",
-            httpOnly: true,
-            secure: true,
-            sameSite: "none",
-            maxAge: 60 * 60 * 24 * 365,
-          })
-        );
+        res.setHeader("Set-Cookie", serialize("aurx_guest_id", userId, {
+          path: "/", httpOnly: true, secure: true, sameSite: "none", maxAge: 60 * 60 * 24 * 365,
+        }));
       }
+    }
+
+    if (body.saveOnly) {
+      // Le front utilise saveOnly après une réponse : ne pas relancer le modèle ni dupliquer le message.
+      return res.status(200).json({ ok: true, saved: true });
     }
 
     const now = Date.now();
@@ -216,7 +227,9 @@ export default async function handler(req, res) {
     } catch {}
 
     // Lancement de la recherche web UNIQUEMENT si l'intention est détectée
-    const searchPromise = shouldSearchWeb(message) ? searchWeb(message) : Promise.resolve("");
+    const wantsWebSearch = shouldSearchWeb(message) && Boolean(process.env.TAVILY);
+    if (wantsWebSearch) write(res, { type: "search_started", status: "Recherche Web en cours…" });
+    const searchPromise = wantsWebSearch ? searchWeb(message) : Promise.resolve("");
 
     let history = [];
     try {
@@ -260,6 +273,9 @@ export default async function handler(req, res) {
 
     // Attente des résultats de la recherche web (si elle a été lancée)
     const searchResults = await searchPromise;
+    if (wantsWebSearch) {
+      write(res, { type: searchResults ? "search_completed" : "search_unavailable", status: searchResults ? "Recherche terminée" : "Recherche indisponible" });
+    }
 
     const basePrompt = BASE_PROMPT;
     let instructions = `Instructions système importantes :\n${basePrompt}\n\n`;
@@ -273,7 +289,7 @@ export default async function handler(req, res) {
     }
 
     if (searchResults) {
-      instructions += `[RÉSULTATS DE LA RECHERCHE WEB (ANNÉE COURANTE 2026)]\n${searchResults}\n[FIN DES RÉSULTATS]\nUtilise ces données récentes pour répondre précisément de manière transparente sans mentionner explicitement que tu as fait une recherche sauf si nécessaire.\n\n`;
+      instructions += `[RÉSULTATS DE LA RECHERCHE WEB]\n${searchResults}\n[FIN DES RÉSULTATS]\nUtilise ces données récentes pour répondre précisément de manière transparente sans mentionner explicitement que tu as fait une recherche sauf si nécessaire.\n\n`;
     }
 
     const messages = [
@@ -346,6 +362,11 @@ export default async function handler(req, res) {
       timestamp: Date.now(),
       convId,
     });
+
+    if (isAuthenticated) {
+      try { await upsertConversation(userId, convId, message, full, now); }
+      catch (err) { console.error("Conversation aggregate sync failed:", err); }
+    }
 
     closeStream(res);
   } catch (err) {

@@ -1,4 +1,5 @@
 import db from '../initMemory.js';
+import { sessionCookieHeader } from '../../lib/session.js';
 
 export default async function handler(req, res) {
   const { code } = req.query;
@@ -36,7 +37,7 @@ export default async function handler(req, res) {
 
     const tokens = await tokenRes.json();
 
-    if (!tokens.access_token) {
+    if (!tokenRes.ok || !tokens.access_token) {
       throw new Error('Pas de access_token reçu');
     }
 
@@ -52,6 +53,7 @@ export default async function handler(req, res) {
     );
 
     const gUser = await userRes.json();
+    if (!userRes.ok || !gUser.id || !gUser.email) throw new Error('Profil Google invalide');
 
 
     // 3. ID AurX
@@ -89,21 +91,8 @@ export default async function handler(req, res) {
 
 
     // Pas de base64 ici, /api/auth/me fait JSON.parse()
-    const sessionToken = JSON.stringify(sessionData);
-
-
-    // 6. Cookie de session AurX
-    res.setHeader(
-      'Set-Cookie',
-      [
-        `aurx_session=${encodeURIComponent(sessionToken)}`,
-        'Path=/',
-        'HttpOnly',
-        'Secure',
-        'SameSite=None',
-        'Max-Age=2592000'
-      ].join('; ')
-    );
+    // 6. Cookie de session signée pour empêcher l'usurpation d'identité.
+    res.setHeader('Set-Cookie', sessionCookieHeader(sessionData));
 
 
     // 7. Retour vers AurX
