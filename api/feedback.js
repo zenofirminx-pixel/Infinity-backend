@@ -1,12 +1,10 @@
 // Infinity Backend — Feedback API
-// Reçoit les signalements de bugs et les évaluations 👍/👎
-// et les envoie à l'adresse du créateur.
+// Compatible avec "type": "module"
 
 const RESEND_API_URL = "https://api.resend.com/emails";
 const FEEDBACK_TO = "firminphinees@gmail.com";
 
-module.exports = async function handler(req, res) {
-  // Autoriser les requêtes provenant de l'application Infinity.
+export default async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader(
     "Access-Control-Allow-Methods",
@@ -18,32 +16,28 @@ module.exports = async function handler(req, res) {
   );
   res.setHeader("Cache-Control", "no-store");
 
-  // Vérification CORS préalable.
   if (req.method === "OPTIONS") {
     return res.status(204).end();
   }
 
-  // Seules les requêtes POST sont autorisées.
   if (req.method !== "POST") {
     res.setHeader("Allow", "POST, OPTIONS");
+
     return res.status(405).json({
       success: false,
       error: "Méthode non autorisée."
     });
   }
 
-  // Vérifier la configuration du serveur.
   const apiKey = process.env.RESEND_API_KEY;
   const from = process.env.FEEDBACK_FROM;
 
   if (!apiKey || !from) {
-    console.error(
-      "Infinity Feedback : configuration e-mail manquante."
-    );
+    console.error("Configuration Resend manquante.");
 
     return res.status(500).json({
       success: false,
-      error: "Le service de feedback n'est pas configuré."
+      error: "Le service e-mail n'est pas configuré."
     });
   }
 
@@ -60,10 +54,7 @@ module.exports = async function handler(req, res) {
       });
     }
 
-    const { type } = body;
-
-    // Limiter la taille des informations reçues.
-    const limitText = (value, max = 5000) =>
+    const clean = (value, max = 3000) =>
       typeof value === "string"
         ? value.trim().slice(0, max)
         : "";
@@ -71,11 +62,8 @@ module.exports = async function handler(req, res) {
     let subject;
     let details;
 
-    // ---------------------------------------
-    // 1. SIGNALER UN BUG
-    // ---------------------------------------
-    if (type === "bug") {
-      const description = limitText(
+    if (body.type === "bug") {
+      const description = clean(
         body.description || body.message,
         5000
       );
@@ -83,87 +71,58 @@ module.exports = async function handler(req, res) {
       if (!description) {
         return res.status(400).json({
           success: false,
-          error: "Décris le problème rencontré."
+          error: "La description du bug est obligatoire."
         });
       }
 
-      const account = limitText(body.account, 200);
-      const page = limitText(body.page, 300);
-      const date = limitText(body.date, 100);
-      const appVersion = limitText(body.appVersion, 100);
-
-      subject = "[Infinity] Nouveau signalement de bug";
+      subject = "[Infinity] Signalement de bug";
 
       details = [
-        "Un utilisateur a signalé un problème dans Infinity.",
+        "Nouveau signalement de bug Infinity",
         "",
         "Description :",
         description,
         "",
-        "Compte : " + (account || "Non renseigné"),
-        "Page : " + (page || "Non renseignée"),
-        "Date déclarée : " + (date || "Non renseignée"),
-        "Version : " + (appVersion || "Non renseignée")
+        "Compte : " + (clean(body.account, 200) || "Non renseigné"),
+        "Page : " + (clean(body.page, 300) || "Non renseignée"),
+        "Version : " + (clean(body.appVersion, 100) || "Non renseignée"),
+        "Date : " + (clean(body.date, 100) || "Non renseignée")
       ].join("\n");
-    }
-
-    // ---------------------------------------
-    // 2. ÉVALUATION D'UNE RÉPONSE DE L'IA
-    // ---------------------------------------
-    else if (type === "rating") {
-      const rating = body.rating;
-
-      if (rating !== "up" && rating !== "down") {
+    } else if (body.type === "rating") {
+      if (body.rating !== "up" && body.rating !== "down") {
         return res.status(400).json({
           success: false,
           error: "Évaluation invalide."
         });
       }
 
-      const response = limitText(
-        body.response || body.answer,
-        5000
-      );
-
-      const question = limitText(body.question, 2000);
-      const account = limitText(body.account, 200);
-      const date = limitText(body.date, 100);
-
       subject =
-        rating === "up"
-          ? "[Infinity] Évaluation positive 👍"
-          : "[Infinity] Évaluation négative 👎";
+        body.rating === "up"
+          ? "[Infinity] Évaluation positive"
+          : "[Infinity] Évaluation négative";
 
       details = [
-        "Une réponse de l'IA Infinity a été évaluée.",
+        "Nouvelle évaluation d'une réponse Infinity",
         "",
         "Évaluation : " +
-          (rating === "up" ? "👍 Positive" : "👎 Négative"),
+          (body.rating === "up" ? "👍 Positive" : "👎 Négative"),
         "",
-        "Question de l'utilisateur :",
-        question || "Non renseignée",
+        "Question :",
+        clean(body.question, 2000) || "Non renseignée",
         "",
         "Réponse évaluée :",
-        response || "Non renseignée",
+        clean(body.response || body.answer, 5000) || "Non renseignée",
         "",
-        "Compte : " + (account || "Non renseigné"),
-        "Date déclarée : " + (date || "Non renseignée")
+        "Compte : " + (clean(body.account, 200) || "Non renseigné"),
+        "Date : " + (clean(body.date, 100) || "Non renseignée")
       ].join("\n");
-    }
-
-    // ---------------------------------------
-    // 3. TYPE INCONNU
-    // ---------------------------------------
-    else {
+    } else {
       return res.status(400).json({
         success: false,
         error: "Type de feedback inconnu."
       });
     }
 
-    // ---------------------------------------
-    // 4. ENVOI DE L'E-MAIL AVEC RESEND
-    // ---------------------------------------
     const emailResponse = await fetch(RESEND_API_URL, {
       method: "POST",
       headers: {
@@ -182,36 +141,28 @@ module.exports = async function handler(req, res) {
 
     if (!emailResponse.ok) {
       console.error(
-        "Infinity Feedback : échec de l'envoi.",
+        "Erreur Resend :",
         emailResponse.status,
         result
       );
 
       return res.status(502).json({
         success: false,
-        error: "L'e-mail n'a pas pu être envoyé."
+        error: "Resend n'a pas pu accepter l'e-mail."
       });
     }
 
-    console.log(
-      "Infinity Feedback : e-mail envoyé.",
-      type
-    );
-
     return res.status(200).json({
       success: true,
-      message: "Ton retour a été envoyé avec succès."
+      message: "Ton retour a été envoyé.",
+      id: result.id
     });
-
   } catch (error) {
-    console.error(
-      "Infinity Feedback : erreur interne.",
-      error.message
-    );
+    console.error("Erreur Feedback :", error);
 
     return res.status(500).json({
       success: false,
-      error: "Une erreur interne est survenue."
+      error: "Erreur interne lors du traitement du retour."
     });
   }
-};
+}
