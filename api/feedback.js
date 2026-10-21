@@ -17,8 +17,12 @@ export default async function handler(req, res) {
   }
 
   try {
-    const { type, description, message, rating, question, response, answer } =
-      req.body || {};
+    const {
+      type,
+      description,
+      message,
+      rating
+    } = req.body || {};
 
     const gmailUser = process.env.GMAIL_USER;
     const gmailPassword = process.env.GMAIL_APP_PASSWORD;
@@ -33,59 +37,63 @@ export default async function handler(req, res) {
     }
 
     let subject;
-    let text;
+    let emailText;
 
-    if (type === "bug") {
-      const bugDescription = String(description || message || "").trim();
+    // ÉVALUATIONS DE L'IA
+    if (type === "rating") {
+      if (rating === "up") {
+        subject = "👍 Infinity APK — Réponse correcte";
 
-      if (!bugDescription || bugDescription.length > 5000) {
-        return res.status(400).json({
-          success: false,
-          error: "Description du bug invalide."
-        });
-      }
+        emailText =
+          "Un utilisateur trouve que la réponse d'Infinity est correcte.\n\n" +
+          "Source : application Infinity (APK).";
+      } else if (rating === "down") {
+        subject = "👎 Infinity APK — Réponse signalée";
 
-      subject = "🐛 Signalement de bug — Infinity";
-
-      text = [
-        "Nouveau signalement de bug sur Infinity",
-        "",
-        "Description :",
-        bugDescription,
-        "",
-        `Date : ${new Date().toISOString()}`
-      ].join("\n");
-    } else if (type === "rating") {
-      if (rating !== "up" && rating !== "down") {
+        emailText =
+          "Un utilisateur a trouvé des erreurs dans les réponses d'Infinity.\n\n" +
+          "Source : application Infinity (APK).";
+      } else {
         return res.status(400).json({
           success: false,
           error: "Évaluation invalide."
         });
       }
+    }
 
-      subject =
-        rating === "up"
-          ? "👍 Évaluation positive — Infinity"
-          : "👎 Évaluation négative — Infinity";
+    // SIGNALEMENTS DE BUGS
+    else if (type === "bug") {
+      const bugDescription = String(
+        description || message || ""
+      ).trim();
 
-      text = [
-        "Nouvelle évaluation d'une réponse d'Infinity",
-        "",
-        `Évaluation : ${rating === "up" ? "Positive 👍" : "Négative 👎"}`,
-        "",
-        `Question : ${String(question || "Non fournie").slice(0, 3000)}`,
-        "",
-        `Réponse de l'IA : ${String(response || answer || "Non fournie").slice(0, 8000)}`,
-        "",
-        `Date : ${new Date().toISOString()}`
-      ].join("\n");
-    } else {
+      if (!bugDescription || bugDescription.length > 5000) {
+        return res.status(400).json({
+          success: false,
+          error: "La description du bug est invalide."
+        });
+      }
+
+      subject = "🐛 Infinity APK — Nouveau signalement de bug";
+
+      emailText =
+        "Un utilisateur a signalé un problème dans Infinity.\n\n" +
+        "Source : application Infinity (APK).\n\n" +
+        "Description du problème :\n" +
+        bugDescription +
+        "\n\nDate : " +
+        new Date().toISOString();
+    }
+
+    // TYPE INCONNU
+    else {
       return res.status(400).json({
         success: false,
         error: "Type de retour non reconnu."
       });
     }
 
+    // ENVOI DE L'E-MAIL
     const transporter = nodemailer.createTransport({
       service: "gmail",
       auth: {
@@ -95,22 +103,31 @@ export default async function handler(req, res) {
     });
 
     await transporter.sendMail({
-      from: `"Infinity" <${gmailUser}>`,
+      from: {
+        name: "Infinity APK",
+        address: gmailUser
+      },
       to: "firminphinees@gmail.com",
       subject,
-      text
+      text: emailText
     });
+
+    console.log("Retour Infinity envoyé :", type);
 
     return res.status(200).json({
       success: true,
       message: "Retour envoyé avec succès."
     });
+
   } catch (error) {
-    console.error("Erreur d'envoi du feedback :", error.message);
+    console.error(
+      "Erreur d'envoi Infinity :",
+      error.message
+    );
 
     return res.status(500).json({
       success: false,
-      error: "Impossible d'envoyer le retour pour le moment."
+      error: "L'envoi a échoué. Réessaie plus tard."
     });
   }
 }
